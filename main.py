@@ -641,7 +641,18 @@ def _fetch_summary_sync(adapter, url: str) -> str:
     try:
         tab = adapter.new_page()
         log.info("   📖 Fetching summary: %s", url)
-        tab.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        try:
+            tab.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        except Exception as nav_err:
+            # Playwright's Node.js driver can crash with:
+            #   "Cannot read properties of undefined (reading 'url')"
+            # when Bloomberg pages throw uncaught JS errors with no
+            # source location. Treat this as a non-fatal navigation error.
+            err_str = str(nav_err)
+            if "Cannot read properties" in err_str or "location" in err_str:
+                log.debug("   ⚠️  Navigation JS error (suppressed): %s", nav_err)
+            else:
+                raise
         time.sleep(random.uniform(1.5, 3.0))
 
         if _is_challenge_sync(tab):
@@ -676,7 +687,15 @@ async def _fetch_summary_async(adapter, url: str) -> str:
     try:
         tab = await adapter.new_page()
         log.info("   📖 Fetching summary: %s", url)
-        await tab.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        try:
+            await tab.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        except Exception as nav_err:
+            # Same Playwright Node.js driver crash guard as sync path.
+            err_str = str(nav_err)
+            if "Cannot read properties" in err_str or "location" in err_str:
+                log.debug("   ⚠️  Navigation JS error (suppressed): %s", nav_err)
+            else:
+                raise
         await asyncio.sleep(random.uniform(1.5, 3.0))
 
         if await _is_challenge_async(tab):
@@ -771,6 +790,14 @@ def _scrape_camoufox_inner(cf_kwargs: dict, existing_urls: set) -> list[dict]:
             locale="en-US",
             timezone_id="America/New_York",
         )
+        # Suppress Bloomberg JS errors at the context level so ALL pages
+        # (including summary tabs) are covered. This prevents the Node.js
+        # Playwright driver crash: "Cannot read properties of undefined
+        # (reading 'url')" when a pageerror has no location info.
+        try:
+            context.on("weberror", lambda _: None)
+        except Exception:
+            pass
         try:
             page = context.new_page()
             page.on("pageerror", lambda exc: None)  # suppress Bloomberg JS errors
