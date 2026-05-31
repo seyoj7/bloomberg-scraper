@@ -640,7 +640,6 @@ def _fetch_summary_sync(adapter, url: str) -> str:
     tab = None
     try:
         tab = adapter.new_page()
-        log.info("   📖 Fetching summary: %s", url)
         try:
             tab.goto(url, wait_until="domcontentloaded", timeout=60_000)
         except Exception as nav_err:
@@ -666,7 +665,6 @@ def _fetch_summary_sync(adapter, url: str) -> str:
             pass
 
         summary = (tab.evaluate(JS_EXTRACT_SUMMARY) or "")[:500]
-        log.info("   ✅ Summary (%d chars)", len(summary))
         return summary
     except Exception as e:
         log.warning("   ⚠️  Could not fetch summary for %s: %s", url, e)
@@ -686,7 +684,6 @@ async def _fetch_summary_async(adapter, url: str) -> str:
     tab = None
     try:
         tab = await adapter.new_page()
-        log.info("   📖 Fetching summary: %s", url)
         try:
             await tab.goto(url, wait_until="domcontentloaded", timeout=60_000)
         except Exception as nav_err:
@@ -709,7 +706,6 @@ async def _fetch_summary_async(adapter, url: str) -> str:
             pass
 
         summary = (await tab.evaluate(JS_EXTRACT_SUMMARY) or "")[:500]
-        log.info("   ✅ Summary (%d chars)", len(summary))
         return summary
     except Exception as e:
         log.warning("   ⚠️  Could not fetch summary for %s: %s", url, e)
@@ -754,7 +750,6 @@ def _enrich_newest_article_sync(adapter, articles, existing_urls):
         log.info("ℹ️  [%s] All articles already known — skipping detail pages.", adapter.label)
         return
     latest = new[0]
-    log.info("🆕 [%s] New article — fetching summary: %s", adapter.label, latest["title"])
     if not latest.get("summary"):
         latest["summary"] = _fetch_summary_sync(adapter, latest["url"])
 
@@ -766,7 +761,6 @@ async def _enrich_newest_article_async(adapter, articles, existing_urls):
         log.info("ℹ️  [%s] All articles already known — skipping detail pages.", adapter.label)
         return
     latest = new[0]
-    log.info("🆕 [%s] New article — fetching summary: %s", adapter.label, latest["title"])
     if not latest.get("summary"):
         latest["summary"] = await _fetch_summary_async(adapter, latest["url"])
 
@@ -814,7 +808,7 @@ def _scrape_camoufox_inner(cf_kwargs: dict, existing_urls: set) -> list[dict]:
             _human_scroll_sync(adapter)
 
             articles = _extract_articles_sync(adapter)
-            log.info("📰 [Camoufox] Extracted %d articles", len(articles))
+            log.info("📰 [Camoufox] Articles updated")
 
             _enrich_newest_article_sync(adapter, articles, existing_urls)
             return articles
@@ -856,7 +850,7 @@ async def _scrape_playwright_async(existing_urls: set) -> list[dict]:
                     log.warning("Content selector timed-out — proceeding anyway")
 
                 articles = await _extract_articles_async(adapter)
-                log.info("📰 [Playwright] Extracted %d articles", len(articles))
+                log.info("📰 [Playwright] Articles updated")
 
                 await _enrich_newest_article_async(adapter, articles, existing_urls)
                 return articles
@@ -933,16 +927,12 @@ def save_output(articles: list[dict]) -> int:
 async def main():
     log.info("🚀 Bloomberg Crypto Scraper started")
     log.info("   Poll interval  : %ds", POLL_INTERVAL)
-    log.info("   Headless mode  : %s", HEADLESS)
-    log.info("   Output folder  : %s", OUTPUT_DIR)
-    log.info("   JSON output    : %s", OUTPUT_JSON)
-    log.info("   Screenshots    : %s", SCREENSHOT_DIR)
     print("\nPress Ctrl+C to stop.\n")
 
     loop_count = 0
     while True:
         loop_count += 1
-        log.info("── Loop %d ──────────────────────────────────────", loop_count)
+        log.info("🔄 Loop %d", loop_count)
 
         existing_urls = {a["url"] for a in load_existing_json()}
         articles      = []
@@ -963,7 +953,7 @@ async def main():
         else:
             log.warning("No articles scraped this round.")
 
-        log.info("😴 Sleeping %ds until next poll…", POLL_INTERVAL)
+        log.info("😴 Sleeping %ds until next poll… \n", POLL_INTERVAL)
         await asyncio.sleep(POLL_INTERVAL)
 
 
