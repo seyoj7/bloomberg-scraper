@@ -1,4 +1,3 @@
-"""
 Bloomberg Crypto Scraper — Cloudflare Bypass Edition
 =====================================================
 Strategy:
@@ -14,11 +13,8 @@ Requirements:
   camoufox fetch              (downloads browser binary on Windows)
   playwright install firefox  (fallback browser)
 
-Run:
-  python main.py
-"""
 
-# Optional: Residential proxy (strongly recommended for production)
-# PROXY_SERVER=http://your-proxy-host:port
-# PROXY_USER=username
-# PROXY_PASS=password
+Optional: Residential proxy (strongly recommended for production)
+PROXY_SERVER=http://your-proxy-host:port
+PROXY_USER=username
+PROXY_PASS=password
