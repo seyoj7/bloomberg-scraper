@@ -11,12 +11,12 @@ load_dotenv()
 
 # Configuration
 TARGET_URL     = "https://www.bloomberg.com/crypto"
-OUTPUT_DIR     = Path("output")
+OUTPUT_DIR     = Path("news_outputs")
 OUTPUT_JSON    = OUTPUT_DIR / "bloomberg_crypto.json"
 SCREENSHOT_DIR = OUTPUT_DIR
-POLL_INTERVAL  = 60
+POLL_INTERVAL  = 300
 MAX_RETRIES    = 3
-HEADLESS       = False
+HEADLESS       = True
 LOG_LEVEL      = logging.INFO
 
 PROXY_SERVER = os.getenv("PROXY_SERVER")
@@ -412,11 +412,13 @@ def _extract_articles(adapter) -> list[dict]:
 
 # ─── Summary fetching ─────────────────────────────────────────────────────────
 
-def _fetch_summary(adapter, url: str) -> str:
+def _fetch_summary(adapter, url: str) -> tuple[str, str | None]:
+    """Return (summary_text, screenshot_path_or_None) for the given article URL."""
     if not url or not url.startswith("http"):
         log.warning("   ⚠️  Skipping summary fetch — invalid URL: %r", url)
-        return ""
+        return "", None
     tab = None
+    screenshot_path: str | None = None
     try:
         tab = adapter.new_page()
         try:
@@ -439,15 +441,17 @@ def _fetch_summary(adapter, url: str) -> str:
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         try:
-            tab.screenshot(path=str(SCREENSHOT_DIR / f"article_{ts}.png"))
+            _path = str(SCREENSHOT_DIR / f"article_{ts}.png")
+            tab.screenshot(path=_path)
+            screenshot_path = _path
         except Exception:
             pass
 
         summary = (tab.evaluate(JS_EXTRACT_SUMMARY) or "")[:500]
-        return summary
+        return summary, screenshot_path
     except Exception as e:
         log.warning("   ⚠️  Could not fetch summary for %s: %s", url, e)
-        return ""
+        return "", None
     finally:
         if tab:
             try:
@@ -473,14 +477,18 @@ def _human_scroll(adapter):
 
 
 def _enrich_newest_article(adapter, articles, existing_urls):
-    """Fetch a summary for the single most-recent new article."""
+    """Fetch a summary and screenshot for the single most-recent new article."""
     new = [a for a in articles if a["url"] not in existing_urls]
     if not new:
         log.info("ℹ️  [%s] All articles already known — skipping detail pages.", adapter.label)
         return
     latest = new[0]
     if not latest.get("summary"):
-        latest["summary"] = _fetch_summary(adapter, latest["url"])
+        summary, screenshot_path = _fetch_summary(adapter, latest["url"])
+        latest["summary"] = summary
+        if screenshot_path:
+            latest["screenshot"] = screenshot_path
+            log.debug("📸 Screenshot saved → %s", screenshot_path)
 
 
 # ─── Camoufox scraper ────────────────────────────────────────────────────────
@@ -509,17 +517,25 @@ def run_once(existing_urls: set) -> list[dict]:
                 locale="en-US",
                 timezone_id="America/New_York",
             )
-            try:
-                context.on("weberror", lambda _: None)
-            except Exception:
-                pass
+            for evt in ("weberror", "pageerror"):
+                try:
+                    context.on(evt, lambda _: None)
+                except Exception:
+                    pass
             try:
                 page = context.new_page()
                 page.on("pageerror", lambda exc: None)
                 adapter = _Adapter(page, context)
 
                 log.info("🌐 [%s] Navigating to %s", adapter.label, TARGET_URL)
-                adapter.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60_000)
+                try:
+                    adapter.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60_000)
+                except Exception as nav_err:
+                    err_str = str(nav_err)
+                    if "Cannot read properties" in err_str or "location" in err_str:
+                        log.debug("⚠️  Main-page nav JS error (suppressed): %s", nav_err)
+                    else:
+                        raise
                 time.sleep(random.uniform(2.0, 4.0))
 
                 if not _cf_wait(adapter):
