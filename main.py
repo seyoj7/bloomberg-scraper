@@ -144,67 +144,96 @@ def _cleanup_old_screenshots():
     except Exception as e:
         log.warning("Screenshot cleanup error: %s", e)
 
-# JavaScript snippets
+from bs4 import BeautifulSoup
 
-JS_EXTRACT_ARTICLES = """
-    () => {
-        const articles = [];
-        const seen = new Set();
+# BeautifulSoup HTML parsers
 
-        // 1. JSON-LD
-        document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
-            try {
-                const data = JSON.parse(s.textContent);
-                const items = Array.isArray(data) ? data : [data];
-                items.forEach(item => {
-                    if ((item['@type'] === 'NewsArticle' || item['@type'] === 'Article') && item.url && item.headline) {
-                        if (!seen.has(item.url)) {
-                            seen.add(item.url);
-                            articles.push({
-                                title: item.headline,
-                                url: item.url,
-                                summary: (item.description || '').substring(0, 300),
-                                timestamp: item.datePublished || ''
-                            });
-                        }
-                    }
-                });
-            } catch(e) {}
-        });
+def extract_articles(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    articles = []
+    seen = set()
 
-        // 2. DOM Links
-        document.querySelectorAll('a[href*="/news/"], a[href*="/articles/"]').forEach(a => {
-            const href = a.href || '';
-            if (!href.includes('bloomberg.com') || seen.has(href)) return;
+    # 1. JSON-LD
+    for s in soup.find_all("script", type="application/ld+json"):
+        content = s.string or s.get_text()
+        if not content:
+            continue
+        try:
+            data = json.loads(content)
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("@type")
+                if item_type in ("NewsArticle", "Article"):
+                    url = item.get("url")
+                    headline = item.get("headline")
+                    if url and headline and url not in seen:
+                        seen.add(url)
+                        articles.append({
+                            "title": headline.strip(),
+                            "url": url,
+                            "summary": (item.get("description") or "")[:300].strip(),
+                            "timestamp": item.get("datePublished") or "",
+                        })
+        except Exception:
+            pass
 
-            let title = a.getAttribute('aria-label') || a.getAttribute('title') || '';
-            if (title.length < 10) {
-                const clone = a.cloneNode(true);
-                clone.querySelectorAll('img, picture, figure').forEach(el => el.remove());
-                title = clone.innerText?.trim() || '';
-            }
+    # 2. DOM Links
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if href.startswith("/"):
+            href = f"https://www.bloomberg.com{href}"
 
-            if (title.length >= 10 && title.includes(' ')) {
-                seen.add(href);
-                articles.push({ title, url: href, summary: '', timestamp: '' });
-            }
-        });
+        if not ("bloomberg.com" in href and ("/news/" in href or "/articles/" in href)):
+            continue
+        if href in seen:
+            continue
 
-        return articles;
-    }
-"""
+        title = a.get("aria-label") or a.get("title") or ""
+        if len(title) < 10:
+            a_copy = BeautifulSoup(str(a), "html.parser").find("a")
+            if a_copy:
+                for el in a_copy.find_all(["img", "picture", "figure", "svg"]):
+                    el.decompose()
+                title = a_copy.get_text(separator=" ", strip=True)
 
-JS_EXTRACT_SUMMARY = """
-    () => {
-        let desc = document.querySelector('meta[property="og:description"]')?.content ||
-                   document.querySelector('meta[name="description"]')?.content || '';
-        if (desc.length > 30) return desc;
+        title = title.strip()
+        if len(title) >= 10 and " " in title:
+            seen.add(href)
+            articles.append({
+                "title": title,
+                "url": href,
+                "summary": "",
+                "timestamp": "",
+            })
 
-        const p = [...document.querySelectorAll('article p, [class*="body"] p, [class*="story"] p')]
-            .map(p => p.innerText.trim()).filter(t => t.length > 60);
-        return p.length ? p.slice(0, 3).join(' ') : '';
-    }
-"""
+    return articles
+
+
+def extract_summary(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+
+    og_desc = soup.find("meta", property="og:description")
+    if og_desc and og_desc.get("content"):
+        content = og_desc["content"].strip()
+        if len(content) > 30:
+            return content
+
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    if meta_desc and meta_desc.get("content"):
+        content = meta_desc["content"].strip()
+        if len(content) > 30:
+            return content
+
+    p_tags = soup.select('article p, [class*="body"] p, [class*="story"] p')
+    paragraphs = [p.get_text(separator=" ", strip=True) for p in p_tags]
+    filtered_p = [t for t in paragraphs if len(t) > 60]
+    if filtered_p:
+        return " ".join(filtered_p[:3])
+
+    return ""
+
 
 # Bot-protection bypass
 
@@ -453,7 +482,8 @@ async def run_once(existing_urls: set) -> list[dict]:
                 pass
 
             now          = datetime.now().isoformat(timespec="seconds")
-            raw_articles = await page.evaluate(JS_EXTRACT_ARTICLES)
+            page_html    = await page.content()
+            raw_articles = extract_articles(page_html)
 
             for a in raw_articles:
                 a["scraped_at"] = now
@@ -478,7 +508,8 @@ async def run_once(existing_urls: set) -> list[dict]:
                             path = str(SCREENSHOT_DIR / f"article_{ts}.png")
                             await tab.screenshot(path=path, type="jpeg", quality=70)
                             latest["screenshot"] = path
-                            latest["summary"]    = (await tab.evaluate(JS_EXTRACT_SUMMARY) or "")[:500]
+                            tab_html             = await tab.content()
+                            latest["summary"]    = (extract_summary(tab_html) or "")[:500]
                     except Exception as e:
                         log.warning("Failed to enrich summary: %s", e)
                         latest["enrich_failed"] = True

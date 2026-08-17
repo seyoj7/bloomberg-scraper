@@ -1,2 +1,4 @@
 /news_outputs
 /.venv
+/cookies
+/__pycache__
